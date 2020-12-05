@@ -1,0 +1,80 @@
+---
+title: "R Notebook"
+output:
+  word_document: default
+  html_notebook: default
+---
+# Downloading Necessary Packages
+```{r}
+suppressPackageStartupMessages({
+    library(ggplot2)
+    library(dplyr)
+    library(magrittr)
+    library(scales)
+})
+library(survey)
+library(srvyr)
+library(plotly)
+```
+# Loading and Quick Cleaning Data
+
+ This involved getting my data I was already using and cleaning it up a bit. 
+```{r}
+PresidentialPolling <- president_polls_3 %>%
+    filter(answer %in% c("Trump", "Biden")) %>%
+    mutate(date = as.Date(start_date, format = "%m/%d/%y")) %>%
+    group_by(state) %>%
+    mutate(mean.biden.share = mean(pct[answer == "Biden"])) %>%
+    filter(state != "")
+```
+#Weighting -aggregated all the daily averages by the number of days to the election
+  Showing how ineffective and disorganized a static chart could be
+```{r}
+polls = PresidentialPolling %>%
+    mutate(polldate_end = as.Date(end_date, format = "%m/%d/%y"), 
+           days_to_elec = as.Date("2020-11-03") - polldate_end) %>%
+    filter(answer %in% c("Biden", "Trump")) %>%
+    select(answer, pct, days_to_elec, state, pollster, sample_size) %>%
+    group_by(answer) %>%
+    mutate(row = row_number()) %>%
+    tidyr::pivot_wider(names_from = answer, values_from = pct) %>%
+    select(-row, -pollster) %>%
+    filter(state %in% state.name) %>%
+    na.omit() %>%
+    mutate(poll_margin = Trump-Biden) %>%
+    as_survey_design(ids = 1, weights=sample_size) %>%
+    group_by(state, days_to_elec) %>%
+    summarize(avg_pollmarg = survey_mean(poll_margin))
+plot(polls$avg_pollmarg, polls$days_to_elec)
+```
+#Aggregating all the days
+```{r}
+polls_sum = polls %>%
+    ungroup() %>%
+    mutate(wts = scale(1/(as.numeric(days_to_elec)+2), center=F)[,1]) %>%
+    as_survey_design(ids = 1, weights=wts) %>%
+    group_by(state) %>%
+    summarize(avg_pollmarg_wtd = survey_mean(avg_pollmarg))
+plot(polls_sum$avg_pollmarg_wtd)
+```
+# Interactive Graph by State 
+```{r}
+polling5 <- plot_ly(
+  polls_sum, x = ~avg_pollmarg_wtd, y = ~avg_pollmarg_wtd_se,
+  # Hover text:
+  text = ~paste("State:", state),
+  color = ~avg_pollmarg_wtd, size = ~avg_pollmarg_wtd
+)
+
+polling5 <-polling5 %>% layout(title = 'Polling Average Weight & SE by State',
+         xaxis = list(title = 'Average Polling Margin Weight',
+                      zeroline = TRUE,
+                      range = c(-40, 40)),
+         yaxis = list(title = 'Average Polling Margin Weigh Standard Error',
+                      zeroline = TRUE,
+                      range = c(0,1.75)))
+
+polling5
+```
+Interactive chart nicely plots Average polling margin weight and Average Polling Margin Weight Standard Error. With over 2042 variables collected from all 50 states leading up to the election, we have a lot of data points. Calcaulting at each state level weighting numbers and SE would be interesting to people watching the polls. You want a number that is close to 0 and SE is extremely low. States like GA, TX, Iowa and Ohio do this very well if you hover close to our zero line. States like Wyoming do extremly badly, because they are polled much less frequently. This graph puts large amount of data and relativley complex analysis into an interactive graph that includes 50 data points and gives a lot of data visually with little effort. 
+
